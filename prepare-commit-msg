@@ -1,0 +1,207 @@
+#!/bin/bash
+# vim: set filetype=sh tabstop=4 shiftwidth=4 noexpandtab:
+# set -x
+
+# prepare-commit hook script
+# prepares commit message for a regular and a merge commit
+#   1. If branch name matches a configured pattern (e.g. `feature/BUG-NNN`,
+#      then get issue NNN summary from an issuetracker and replace it
+#      with "fixed: #" substring in a first line of a commit template
+#      (which can be set with `git config commit.template`)
+#
+#      Issuetracker URL is configured via `git config log.mantis.api.url`
+#      Script to get issue summary from the issuetracker is configured  via`git config log.issuetracker.cmd`
+#
+#      This can be skipped with SKIP_ISSUETRACKER set to non-empty value
+#      RECACHE_ISSUE_TRACKER can be set to update cached issue summary from the issuetracker
+#      ISSUE_ISSUETRACKER can be set to replace "${ISSUE_PREFIX}" string with an "issue #NNN:" string
+#   2. If commit is a merge commit of two different branches,
+#      makes commit message on a template "Merge A.B.C.x into D.E.F.x",
+#      where A.B.C is a "remote" version, D.E.F - "local" version
+
+GITDIR=$(git rev-parse --git-dir)
+ISSUETRACKER_USE=$(git config log.issuetracker.to-use)
+ISSUE_PREFIX=$(git config log.issuetracker.issue.prefix)
+ISSUE_MATCH=$(git config log.issuetracker.issue.match)
+ISSUETRACKER_API_URL=${ISSUETRACKER_API_URL:-$(git config log.issuetracker.api.url)}
+ISSUETRACKER_CMD=${ISSUETRACKER_CMD:-$(git config log.issuetracker.cmd)}
+ISSUE_CACHE_FILE=$(git config log.issuetracker.cache-file)
+
+function get_version()
+{
+	local file="$GITDIR/$1_HEAD"
+	if ! test -f "$file"; then
+		echo No $file. $2 1>&2
+		exit
+	fi
+	cat $file | xargs git describe --abbrev=1
+}
+
+function inc_release()
+{
+	local VERSION=${1%%-*}
+	local SUFFIX=
+	local MAJOR_MINOR=${VERSION%.*}
+	local RELEASE=${VERSION##*.}
+	if test -n "$2" || test "$VERSION" != "$1"; then
+		let RELEASE=RELEASE+1
+		SUFFIX='.x'
+	fi
+	echo $MAJOR_MINOR.$RELEASE$SUFFIX
+}
+
+function print_issue_name()
+{
+	if test -s $GITDIR/rebase-merge/head-name
+	then
+		ISSUE=$(< $GITDIR/rebase-merge/head-name)
+		ISSUE=${ISSUE##refs/heads/}
+	else
+		ISSUE=$(git rev-parse --abbrev-ref HEAD)
+	fi
+	ISSUE=$(echo $ISSUE | perl -npe "$ISSUE_MATCH or \$_ = \"\"")
+	echo $ISSUE
+}
+
+function validate_config()
+{
+	if test "$ISSUETRACKER_USE" != "yes"
+	then
+		echo skip
+		return
+	fi
+
+	if test -z "$ISSUE_PREFIX"
+	then
+		echo "Please, configure ISSUE_PREFIX" >&2
+		echo "git config [--global] log.issuetracker.issue.prefix PREFIX" >&2
+		exit 1
+	fi
+
+	if test -z "$ISSUE_MATCH"
+	then
+		echo "Please, configure ISSUE_MATCH" >&2
+		echo "git config [--global] log.issuetracker.issue.match MATCH" >&2
+		exit 1
+	fi
+
+	if test -z "$ISSUE_CACHE_FILE"
+	then
+		echo "Please, configure ISSUE_CACHE_FILE" >&2
+		echo "git config [--global] log.issuetracker.cache-file FILE" >&2
+		exit 1
+	fi
+}
+
+function dowork()
+{
+	FILE="$1"
+	case "$2,$3" in
+		template,)
+			if test -z "$ISSUE"
+			then
+				ISSUE=$(print_issue_name)
+			fi
+			REPLACE="^$ISSUE_PREFIX"
+			# exit if branch name does not match "CEMS-NNN..."
+			if test -z "$ISSUE"
+			then
+				exit 0
+			fi
+			ISSUE_CONFIG="log.issue.$ISSUE.headline"
+			ISSUE_HEADLINE=
+			# if we want to skip description replacement
+			if test -n "$SKIP_ISSUE"
+			then
+				exit 0
+			fi
+			if test -n "$ISSUE_ISSUETRACKER"; then
+				# we must be sure $ISSUE does not contain slashes ('/')
+				# to make sed work well
+				sed -i -e "1 s/$REPLACE/$ISSUE/" "$FILE"
+				exit 0
+			fi
+			# we may want to recache headline
+			if test -z "$RECACHE_ISSUE_TRACKER"; then
+				ISSUE_HEADLINE=$(git config --file "$ISSUE_CACHE_FILE" "$ISSUE_CONFIG")
+			fi
+			if test -z "$ISSUE_HEADLINE" -a -n "$ISSUETRACKER_CMD" -a -n "$ISSUETRACKER_API_URL"
+			then
+				# if no cache and Mantis API URL and mantis-connector script are set
+				# get cache
+				# get the same encoding which we commit in
+				ENCODING=$(git config i18n.commitencoding)
+				echo "Getting headline for $ISSUE"
+				ISSUE_HEADLINE=$("$ISSUETRACKER_CMD" -s "$ISSUETRACKER_API_URL" --id $ISSUE --command get --encoding $ENCODING)
+				# and set it
+				git config --file "$ISSUE_CACHE_FILE" "$ISSUE_CONFIG" "$ISSUE_HEADLINE"
+			fi
+			ISSUE_TEXT="$ISSUE | $ISSUE_HEADLINE"
+			# escape slashes ('/') in the commit message to make sed work well
+			ISSUE_TEXT="${ISSUE_TEXT//\//\\/}"
+			# escape ampersand ('&'), too
+			ISSUE_TEXT="${ISSUE_TEXT//&/\\&}"
+			# replace in the first line only
+			if test -f "$FILE"
+			then
+				sed -i -e "1 s/$REPLACE/$ISSUE_TEXT/" "$FILE"
+				sed -i -e "2,\$s/%s/$ISSUE/" "$FILE"
+			else
+				cat <<-TEXT
+				$ISSUE_TEXT
+	TEXT
+				exit 2
+			fi
+			;;
+		merge,)
+			MERGE_FROM=$(get_version "MERGE" "Simple merge?")
+			if test -z "$MERGE_FROM"
+			then
+				cherry_pick_head=$(get_version "CHERRY_PICK")
+				if test -n "$cherry_pick_head"
+				then
+					echo "Cherry picking?" 1>&2
+					exit 0
+				fi
+				# get merged branch name or commit ID
+				MERGE_FROM=`sed -n -r "s/^Merge (commit|branch) '(\S+)'.*/\\2/p" "$FILE"`
+				# get its "headline"
+				MERGE_MSG=$(git log --format=%s -1 $MERGE_FROM --)
+				TMPL="Merged: $MERGE_MSG"
+				# comment out first line
+				sed -i -e "1s/^/# /" "$FILE"
+			else
+				MERGE_INTO=$(get_version "ORIG")
+				test -n "$MERGE_INTO" || exit 1
+				MERGE_FROM=$(inc_release "$MERGE_FROM")
+				MERGE_INTO=$(inc_release "$MERGE_INTO" 1)
+
+				TMPL="Merge $MERGE_FROM into $MERGE_INTO"
+			fi
+			# for tests (direct run)
+			if test -f "$FILE"
+			then
+			# insert newly generated message
+				sed -i -e "1 i$TMPL" "$FILE"
+			else
+				echo $TMPL
+				exit 2;
+			fi
+			;;
+		,)
+			if test "$FILE" = "issue"; then
+				print_issue_name
+			fi
+			;;
+		*)
+			;;
+	esac
+}
+
+if test "$(validate_config)" == "skip"
+then
+	echo "Issue tracker skipped as configured to skip" >&2
+	exit 0
+fi
+
+dowork $@
