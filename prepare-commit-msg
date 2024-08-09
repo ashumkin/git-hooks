@@ -133,6 +133,11 @@ function dowork()
 				ENCODING=$(git config i18n.commitencoding)
 				echo "Getting headline for $ISSUE"
 				ISSUE_HEADLINE=$("$ISSUETRACKER_CMD" -s "$ISSUETRACKER_API_URL" --id $ISSUE --command get --encoding $ENCODING)
+				if test -z "$ISSUE_HEADLINE"
+				then
+					echo "Error getting headline for the $ISSUE" >&2
+					exit 3
+				fi
 				# and set it
 				git config --file "$ISSUE_CACHE_FILE" "$ISSUE_CONFIG" "$ISSUE_HEADLINE"
 			fi
