@@ -150,7 +150,6 @@ function dowork()
 				cat <<-TEXT
 				$ISSUE_TEXT
 	TEXT
-				exit 2
 			fi
 			;;
 		merge,)
@@ -185,7 +184,6 @@ function dowork()
 				sed -i -e "1 i$TMPL" "$FILE"
 			else
 				echo $TMPL
-				exit 2;
 			fi
 			;;
 		,)
