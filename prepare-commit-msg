@@ -24,8 +24,8 @@ ISSUETRACKER_USE=$(git config log.issuetracker.to-use)
 ISSUE_PREFIX=$(git config log.issuetracker.issue.prefix)
 ISSUE_MATCH=$(git config log.issuetracker.issue.match)
 ISSUETRACKER_API_URL=${ISSUETRACKER_API_URL:-$(git config log.issuetracker.api.url)}
-ISSUETRACKER_CMD=${ISSUETRACKER_CMD:-$(git config log.issuetracker.cmd)}
-ISSUE_CACHE_FILE=$(git config log.issuetracker.cache-file)
+ISSUETRACKER_CMD=${ISSUETRACKER_CMD:-$(git config --type path log.issuetracker.cmd)}
+ISSUE_CACHE_FILE=$(git config --type path log.issuetracker.cache-file)
 
 function get_version()
 {
