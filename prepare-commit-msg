@@ -170,17 +170,18 @@ function dowork()
 				# get merged branch name or commit ID
 				MERGE_FROM=`sed -n -r "s/^Merge (commit|branch) '(\S+)'.*/\\2/p" "$FILE"`
 				# get its "headline"
-				MERGE_MSG=$(git log --format=%s -1 $MERGE_FROM --)
+				MERGE_MSG=$(git log --format=%s -1 "$MERGE_FROM" --)
 				TMPL="Merged: $MERGE_MSG"
 				# comment out first line
 				sed -i -e "1s/^/# /" "$FILE"
 			else
+				MERGE_MSG=$(git log --format=%s -1 "$MERGE_FROM" --)
 				MERGE_INTO=$(get_version "ORIG")
 				test -n "$MERGE_INTO" || exit 1
 				MERGE_FROM=$(inc_release "$MERGE_FROM")
 				MERGE_INTO=$(inc_release "$MERGE_INTO" 1)
 
-				TMPL="Merge $MERGE_FROM into $MERGE_INTO"
+				TMPL="Merge: $MERGE_MSG\n\nMerge $MERGE_FROM into $MERGE_INTO"
 			fi
 			# for tests (direct run)
 			if test -f "$FILE"
@@ -188,7 +189,7 @@ function dowork()
 			# insert newly generated message
 				sed -i -e "1 i$TMPL" "$FILE"
 			else
-				echo $TMPL
+				echo "$TMPL"
 			fi
 			;;
 		,)
